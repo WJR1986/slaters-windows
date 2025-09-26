@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Slater's Follow Up App</title>
+    <title>Customer Follow-up Calendar</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
@@ -51,7 +51,7 @@
     <div id="app-content" class="d-none">
         <nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm">
             <div class="container">
-                <span class="navbar-brand mb-0 h1">Slater's Follow Up App</span>
+                <span class="navbar-brand mb-0 h1">Follow-up App</span>
                 <div class="d-flex align-items-center">
                     <span id="user-email" class="navbar-text me-3 d-none d-sm-block"></span>
                     <button id="signout-btn" class="btn btn-outline-secondary">Sign Out</button>
@@ -81,6 +81,14 @@
                         </div>
                     </form>
                 </div>
+
+                <!-- Overdue Report Section -->
+                <div class="card shadow-sm p-3 mb-4 text-center">
+                    <p class="mb-2 fw-medium">Get an immediate email report of all overdue follow-ups.</p>
+                    <button id="overdue-check-btn" class="btn btn-info">Email Overdue Report</button>
+                    <div id="overdue-status" class="form-text mt-2" style="min-height: 20px;"></div>
+                </div>
+
                 <!-- Due for Follow-up Section -->
                 <div class="mb-5">
                     <h2 class="h3 fw-bold mb-3 d-flex align-items-center gap-2">
@@ -114,12 +122,13 @@
 <!-- Import Firebase SDKs -->
 <script type="module">
     // Import the functions you need from the SDKs you need
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.17.1/firebase-app.js";
-    import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/9.17.1/firebase-auth.js";
-    import { getFirestore, doc, onSnapshot, setDoc } from "https://www.gstatic.com/firebasejs/9.17.1/firebase-firestore.js";
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+    import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-auth.js";
+    import { getFirestore, doc, onSnapshot, setDoc, updateDoc } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
+    import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-functions.js";
 
     // --- FIREBASE CONFIGURATION ---
-    // TODO: Add your own Firebase project configuration here
+    // IMPORTANT: Replace with your web app's Firebase configuration
 const firebaseConfig = {
   apiKey: "AIzaSyDVNpZJdoH36cnuTAG8yCE-MHTYKu08FMA",
   authDomain: "slaters-dee11.firebaseapp.com",
@@ -128,12 +137,11 @@ const firebaseConfig = {
   messagingSenderId: "542128251841",
   appId: "1:542128251841:web:6d87c30c026329fb978540"
 };
-
-
     // Initialize Firebase
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getFirestore(app);
+    const functions = getFunctions(app);
 
     // --- UI ELEMENTS ---
     const authContainer = document.getElementById('auth-container');
@@ -154,7 +162,9 @@ const firebaseConfig = {
     const noUpcomingMessage = document.getElementById('no-upcoming-message');
     const notificationBanner = document.getElementById('notification-banner');
     const enableNotificationsBtn = document.getElementById('enable-notifications');
-    
+    const overdueCheckBtn = document.getElementById('overdue-check-btn');
+    const overdueStatus = document.getElementById('overdue-status');
+
     visitDateInput.valueAsDate = new Date();
     let customers = [];
     let currentUser = null;
@@ -164,20 +174,17 @@ const firebaseConfig = {
     // --- AUTHENTICATION LOGIC ---
     onAuthStateChanged(auth, (user) => {
         if (user) {
-            // User is signed in
             currentUser = user;
             userEmailEl.textContent = user.email;
             authContainer.classList.add('d-none');
             appContent.classList.remove('d-none');
-            
-            // Set up Firestore reference and listener
+
             customerDocRef = doc(db, "users", currentUser.uid);
             listenForCustomerUpdates();
 
         } else {
-            // User is signed out
             currentUser = null;
-            if(unsubscribe) unsubscribe(); // Stop listening to old data
+            if(unsubscribe) unsubscribe();
             authContainer.classList.remove('d-none');
             appContent.classList.add('d-none');
         }
@@ -196,11 +203,38 @@ const firebaseConfig = {
         signOut(auth);
     });
 
+    // --- ON-DEMAND OVERDUE REPORT ---
+    overdueCheckBtn.addEventListener('click', async () => {
+        overdueCheckBtn.disabled = true;
+        overdueStatus.textContent = 'Generating and sending report...';
+        overdueStatus.classList.remove('text-danger', 'text-success');
+        overdueStatus.classList.add('text-primary');
+
+        try {
+            const sendOverdueSummary = httpsCallable(functions, 'sendOverdueSummary');
+            const result = await sendOverdueSummary();
+            overdueStatus.textContent = result.data.message;
+            overdueStatus.classList.add('text-success');
+        } catch (error) {
+            console.error('Error calling sendOverdueSummary function:', error);
+            overdueStatus.textContent = `Error: ${error.message}`;
+            overdueStatus.classList.add('text-danger');
+        } finally {
+            setTimeout(() => {
+                overdueCheckBtn.disabled = false;
+                overdueStatus.textContent = '';
+            }, 7000);
+        }
+    });
+
     // --- FIRESTORE & CORE APP LOGIC ---
     function listenForCustomerUpdates() {
+        const initialUserData = { email: currentUser.email, customers: [] };
+        setDoc(customerDocRef, initialUserData, { merge: true });
+
         unsubscribe = onSnapshot(customerDocRef, (docSnap) => {
-            if (docSnap.exists()) {
-                customers = docSnap.data().customers || [];
+            if (docSnap.exists() && docSnap.data().customers) {
+                customers = docSnap.data().customers;
             } else {
                 customers = [];
             }
@@ -208,12 +242,19 @@ const firebaseConfig = {
             checkNotificationsOnLoad();
         });
     }
-    
+
     const saveCustomers = () => {
         if (customerDocRef) {
-            setDoc(customerDocRef, { customers: customers });
+            updateDoc(customerDocRef, { customers: customers });
         }
     };
+
+    function toYYYYMMDD(date) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
 
     customerForm.addEventListener('submit', (e) => {
         e.preventDefault();
@@ -222,19 +263,21 @@ const firebaseConfig = {
         const visitDate = visitDateInput.value;
         if (!name || !address || !visitDate) return;
 
-        const initialDate = new Date(visitDate);
-        const dueDate = new Date(initialDate.setMonth(initialDate.getMonth() + 1));
+        const dateParts = visitDate.split('-').map(part => parseInt(part, 10));
+        const initialDate = new Date(dateParts[0], dateParts[1] - 1, dateParts[2]);
+
+        initialDate.setMonth(initialDate.getMonth() + 1);
+
         const newCustomer = {
             id: Date.now(), name, address, initialDate: visitDate,
-            dueDate: dueDate.toISOString().split('T')[0]
+            dueDate: toYYYYMMDD(initialDate)
         };
         customers.push(newCustomer);
         saveCustomers();
         customerForm.reset();
         visitDateInput.valueAsDate = new Date();
     });
-    
-    // --- RENDERING LOGIC (Mostly unchanged) ---
+
     const renderCustomers = () => {
         dueList.innerHTML = '';
         upcomingList.innerHTML = '';
@@ -248,12 +291,15 @@ const firebaseConfig = {
         const sortedCustomers = [...customers].sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
 
         sortedCustomers.forEach(customer => {
-            const dueDate = new Date(customer.dueDate);
-            dueDate.setHours(0, 0, 0, 0);
+            const dateParts = customer.dueDate.split('-').map(part => parseInt(part, 10));
+            const dueDate = new Date(dateParts[0], dateParts[1] - 1, dateParts[2]);
+            
             const isDue = dueDate <= today;
             const customerCard = document.createElement('div');
             customerCard.className = `list-group-item d-flex flex-column flex-sm-row justify-content-between align-items-sm-center gap-3 ${isDue ? 'border-start border-5 border-danger' : 'border-start border-5 border-primary'}`;
-            const formattedDueDate = new Date(customer.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+            
+            const formattedDueDate = dueDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+
             customerCard.innerHTML = `
                 <div>
                     <p class="fw-bold h5 mb-1">${customer.name}</p>
@@ -272,7 +318,7 @@ const firebaseConfig = {
                 upcomingCount++;
             }
         });
-        
+
         noDueMessage.style.display = dueCount === 0 ? 'block' : 'none';
         noUpcomingMessage.style.display = upcomingCount === 0 ? 'block' : 'none';
         addEventListenersToButtons();
@@ -291,16 +337,18 @@ const firebaseConfig = {
                 const id = parseInt(e.target.dataset.id);
                 const customer = customers.find(c => c.id === id);
                 if (customer) {
-                    const currentDueDate = new Date(customer.dueDate);
+                    const dateParts = customer.dueDate.split('-').map(part => parseInt(part, 10));
+                    const currentDueDate = new Date(dateParts[0], dateParts[1] - 1, dateParts[2]);
                     currentDueDate.setDate(currentDueDate.getDate() + 2);
-                    customer.dueDate = currentDueDate.toISOString().split('T')[0];
+                    
+                    customer.dueDate = toYYYYMMDD(currentDueDate);
                     saveCustomers();
                 }
             });
         });
     };
 
-    // --- NOTIFICATION LOGIC (Mostly unchanged) ---
+    // --- NOTIFICATION LOGIC ---
     let notificationPermission = Notification.permission;
     function checkNotificationPermission() {
         if (Notification.permission === 'default') {
@@ -319,20 +367,17 @@ const firebaseConfig = {
     const checkNotificationsOnLoad = () => {
         checkNotificationPermission();
         const dueCustomers = customers.filter(c => {
-            const dueDate = new Date(c.dueDate);
-            dueDate.setHours(0,0,0,0);
-            const today = new Date();
-            today.setHours(0,0,0,0);
-            return dueDate <= today;
+            const dateParts = c.dueDate.split('-').map(part => parseInt(part, 10));
+            const dueDate = new Date(dateParts[0], dateParts[1] - 1, dateParts[2]);
+            return dueDate <= new Date();
         });
         if (dueCustomers.length > 0 && notificationPermission === 'granted') {
              new Notification(`${dueCustomers.length} Follow-up(s) Due!`, {
-                body: `You have work to do. Open the app to see details.`,
-                icon: 'https://placehold.co/48x48/dc3545/ffffff?text=❗'
+                 body: `You have work to do. Open the app to see details.`,
+                 icon: 'https://placehold.co/48x48/dc3545/ffffff?text=❗'
             });
         }
     };
 </script>
 </body>
 </html>
-
